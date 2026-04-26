@@ -1,6 +1,6 @@
 [package]
 name = "investbuddy"
-version = "0.2.0"
+version = "0.4.0"
 description = "InvestBuddy desktop app"
 authors = ["InvestBuddy"]
 edition = "2021"
