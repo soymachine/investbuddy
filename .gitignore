@@ -16,6 +16,7 @@ dist-ssr
 !.env.example
 src-tauri/target
 src-tauri/gen/schemas
+src-tauri/Cargo.lock
 
 # Editor directories and files
 .vscode/*
