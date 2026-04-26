@@ -13,7 +13,7 @@ import { buildLiveRecommendations, buildRecommendations, scoreStock } from './se
 import { loadHoldings, loadSettings, saveHoldings, saveSettings } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.3.2'
+const APP_VERSION = '0.4.0'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -23,8 +23,8 @@ interface AppState {
   holdings: Holding[]
   recommendations: Recommendation[]
   allRecommendations: Recommendation[]
-  lastSignalAt: string | null
-  isInvesting: boolean
+  lastUpdatedAt: number | null
+  isRefreshing: boolean
   selectedStock: WatchlistItem | null
   stockHistory: PricePoint[] | null
   historyDays: 30 | 60
@@ -38,8 +38,8 @@ const state: AppState = {
   holdings: loadHoldings(),
   recommendations: [],
   allRecommendations: [],
-  lastSignalAt: null,
-  isInvesting: false,
+  lastUpdatedAt: null,
+  isRefreshing: false,
   selectedStock: null,
   stockHistory: null,
   historyDays: 30,
@@ -73,6 +73,12 @@ function render(): void {
 
 function renderHeader(): string {
   const access = hasMinimumDataAccess(state.settings) ? 'DATA READY' : 'KEYS PENDING'
+  const refreshLabel = state.isRefreshing ? 'CARGANDO' : 'ACTUALIZAR'
+  const updatedText = state.isRefreshing
+    ? 'actualizando...'
+    : state.lastUpdatedAt
+      ? relativeTime(state.lastUpdatedAt)
+      : 'sin datos'
 
   return `
     <header class="topbar" aria-label="InvestBuddy navigation">
@@ -87,11 +93,30 @@ function renderHeader(): string {
         ${navButton('settings', 'Settings')}
       </nav>
       <div class="topbar-meta">
+        <button class="refresh-btn" id="refresh-btn" type="button" ${state.isRefreshing ? 'disabled' : ''} aria-label="Actualizar datos de mercado">
+          <span>${refreshLabel}</span>
+          <small>${updatedText}</small>
+        </button>
         <div class="system-pill">${access}</div>
         <div class="version-pill">v${APP_VERSION}</div>
       </div>
     </header>
   `
+}
+
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'hace un momento'
+  if (mins < 60) return `hace ${mins} min`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `hace ${hours}h`
+  const days = Math.floor(hours / 24)
+  if (days === 1) return 'hace 1 día'
+  if (days < 7) return `hace ${days} días`
+  const weeks = Math.floor(days / 7)
+  if (weeks === 1) return 'hace 1 semana'
+  return `hace ${weeks} semanas`
 }
 
 function navButton(view: ViewName, label: string): string {
@@ -100,12 +125,9 @@ function navButton(view: ViewName, label: string): string {
 }
 
 function renderHero(): string {
-  const subtitle = state.isInvesting
-    ? 'Conectando Finnhub, Marketaux y Eulerpool. Si una fuente falla, el motor conserva fallback local.'
-    : state.lastSignalAt
-      ? `Ultima senal generada ${state.lastSignalAt}`
-      : 'Pulsa INVERTIR para puntuar la watchlist fija con el modelo MVP.'
-  const buttonLabel = state.isInvesting ? 'ANALIZANDO' : 'INVERTIR'
+  const subtitle = state.lastUpdatedAt
+    ? `Ultima actualizacion: ${relativeTime(state.lastUpdatedAt)}`
+    : 'Usa ACTUALIZAR en la barra superior para puntuar la watchlist con el modelo MVP.'
 
   return `
     <section class="hero-panel">
@@ -114,8 +136,8 @@ function renderHero(): string {
         <h1>NO RUIDO,<br>SOLO MOVIMIENTO.</h1>
         <p class="hero-subtitle">${subtitle}</p>
       </div>
-      <button class="invest-button" id="invest-button" type="button" ${state.isInvesting ? 'disabled' : ''}>
-        <span>${buttonLabel}</span>
+      <button class="invest-button" id="invest-button" type="button">
+        <span>INVERTIR</span>
         <small>100 EUR / TOP 3</small>
       </button>
       <div class="orb" aria-hidden="true"></div>
@@ -124,9 +146,8 @@ function renderHero(): string {
 }
 
 function renderCompactInvest(): string {
-  const label = state.isInvesting ? 'ANALIZANDO' : 'INVERTIR'
-  const subtitle = state.lastSignalAt
-    ? `Ultima senal: ${state.lastSignalAt}`
+  const subtitle = state.lastUpdatedAt
+    ? `Ultima actualizacion: ${relativeTime(state.lastUpdatedAt)}`
     : 'Analiza la watchlist completa'
 
   return `
@@ -135,8 +156,8 @@ function renderCompactInvest(): string {
         <p class="eyebrow">/ CAPITAL DECISION SYSTEM</p>
         <p class="compact-invest-sub">${subtitle}</p>
       </div>
-      <button class="invest-button-compact" id="invest-button" type="button" ${state.isInvesting ? 'disabled' : ''}>
-        <span>${label}</span>
+      <button class="invest-button-compact" id="invest-button" type="button">
+        <span>INVERTIR</span>
         <small>100 EUR / TOP 3</small>
       </button>
     </div>
@@ -250,6 +271,9 @@ function renderStockRow(stock: WatchlistItem): string {
 
 function renderStockModal(): string {
   const stock = state.selectedStock!
+  const recommendation =
+    state.allRecommendations.find((r) => r.stock.symbol === stock.symbol) ??
+    scoreStock(stock, state.settings)
   const chartContent = state.historyLoading
     ? '<div class="chart-loading">CARGANDO DATOS...</div>'
     : state.stockHistory && state.stockHistory.length > 1
@@ -274,6 +298,7 @@ function renderStockModal(): string {
           ${chartContent}
         </div>
         ${!state.historyLoading && state.stockHistory?.length ? renderHistoryStats(state.stockHistory, stock) : ''}
+        ${renderScoreBreakdown(recommendation)}
       </div>
     </div>
   `
@@ -370,6 +395,52 @@ function renderHistoryStats(history: PricePoint[], stock: WatchlistItem): string
         <small>MAXIMO</small>
       </div>
       ${state.historySource ? `<div class="stat-item"><span class="stat-value stat-source-val">${state.historySource}</span><small>FUENTE</small></div>` : ''}
+    </div>
+  `
+}
+
+function renderScoreBreakdown(rec: Recommendation): string {
+  const signals: Array<{ label: string; value: number; inverted?: boolean }> = [
+    { label: 'Momentum', value: rec.signal.momentum },
+    { label: 'Tendencia', value: rec.signal.trend },
+    { label: 'Estabilidad', value: rec.signal.stability },
+    { label: 'Volumen', value: rec.signal.volume },
+    { label: 'Sentimiento', value: rec.signal.sentiment },
+    ...(rec.signal.insider !== null ? [{ label: 'Insider', value: rec.signal.insider }] : []),
+    { label: 'Riesgo', value: rec.signal.risk, inverted: true },
+  ]
+
+  const bars = signals
+    .map(({ label, value, inverted }) => {
+      const barWidth = inverted ? 100 - value : value
+      const color =
+        inverted
+          ? value > 68 ? 'var(--danger)' : 'var(--positive)'
+          : value >= 70 ? 'var(--positive)' : value >= 45 ? 'var(--yellow)' : 'var(--danger)'
+      return `
+        <div class="signal-row">
+          <span class="signal-label">${label}</span>
+          <div class="signal-track">
+            <div class="signal-fill" style="width:${barWidth.toFixed(0)}%;background:${color}"></div>
+          </div>
+          <span class="signal-val">${value.toFixed(0)}</span>
+        </div>`
+    })
+    .join('')
+
+  const warningHtml = rec.warnings.some((w) => !w.startsWith('No hay'))
+    ? `<p class="breakdown-warnings">${rec.warnings.filter((w) => !w.startsWith('No hay')).join(' · ')}</p>`
+    : ''
+
+  return `
+    <div class="score-breakdown">
+      <div class="score-breakdown-header">
+        <p class="eyebrow">/ SCORE BREAKDOWN</p>
+        <span class="breakdown-score">${rec.score.toFixed(1)}<small>/ 100</small></span>
+      </div>
+      <div class="signal-bars">${bars}</div>
+      <p class="data-sources">${rec.dataSources.join(' / ')}</p>
+      ${warningHtml}
     </div>
   `
 }
@@ -474,20 +545,26 @@ function bindEvents(): void {
     })
   })
 
-  document.querySelector<HTMLButtonElement>('#invest-button')?.addEventListener('click', async () => {
-    state.isInvesting = true
+  document.querySelector<HTMLButtonElement>('#invest-button')?.addEventListener('click', () => {
     state.view = 'dashboard'
+    render()
+  })
+
+  document.querySelector<HTMLButtonElement>('#refresh-btn')?.addEventListener('click', async () => {
+    state.isRefreshing = true
     render()
 
     try {
       const all = await buildLiveRecommendations(state.settings)
       state.allRecommendations = all
       state.recommendations = all.slice(0, 3)
+      state.lastUpdatedAt = Date.now()
     } catch {
-      state.recommendations = buildRecommendations(state.settings)
+      if (!state.recommendations.length) {
+        state.recommendations = buildRecommendations(state.settings)
+      }
     } finally {
-      state.lastSignalAt = new Date().toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' })
-      state.isInvesting = false
+      state.isRefreshing = false
       render()
     }
   })
