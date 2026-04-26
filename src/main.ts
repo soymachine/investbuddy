@@ -25,6 +25,7 @@ interface AppState {
   allRecommendations: Recommendation[]
   lastUpdatedAt: number | null
   isRefreshing: boolean
+  watchlistSortByScore: boolean
   selectedStock: WatchlistItem | null
   stockHistory: PricePoint[] | null
   historyDays: 30 | 60
@@ -40,6 +41,7 @@ const state: AppState = {
   allRecommendations: [],
   lastUpdatedAt: null,
   isRefreshing: false,
+  watchlistSortByScore: false,
   selectedStock: null,
   stockHistory: null,
   historyDays: 30,
@@ -231,16 +233,26 @@ function renderRecommendation(recommendation: Recommendation): string {
 }
 
 function renderWatchlist(): string {
+  const stocks = state.watchlistSortByScore
+    ? [...WATCHLIST].sort((a, b) => {
+        const scoreA = (state.allRecommendations.find((r) => r.stock.symbol === a.symbol) ?? scoreStock(a, state.settings)).score
+        const scoreB = (state.allRecommendations.find((r) => r.stock.symbol === b.symbol) ?? scoreStock(b, state.settings)).score
+        return scoreB - scoreA
+      })
+    : WATCHLIST
+
   return `
     <section class="bento-grid">
       <article class="bento-card span-12">
-        <div class="section-heading">
+        <div class="watchlist-toolbar">
           <p class="eyebrow">/ FIXED UNIVERSE</p>
-          <h2>Watchlist inicial EEUU + Europa</h2>
+          <button class="sort-score-btn ${state.watchlistSortByScore ? 'is-active' : ''}" id="sort-score-btn" type="button">
+            SCORE ${state.watchlistSortByScore ? '↓' : '—'}
+          </button>
         </div>
         <p class="watchlist-hint">Pulsa sobre cualquier accion para ver su evolucion de precio.</p>
         <div class="stock-table" role="table" aria-label="Watchlist de acciones">
-          ${WATCHLIST.map(renderStockRow).join('')}
+          ${stocks.map(renderStockRow).join('')}
         </div>
       </article>
     </section>
@@ -567,6 +579,11 @@ function bindEvents(): void {
       state.isRefreshing = false
       render()
     }
+  })
+
+  document.querySelector<HTMLButtonElement>('#sort-score-btn')?.addEventListener('click', () => {
+    state.watchlistSortByScore = !state.watchlistSortByScore
+    render()
   })
 
   document.querySelectorAll<HTMLButtonElement>('[data-register]').forEach((button) => {
