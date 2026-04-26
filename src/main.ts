@@ -13,7 +13,7 @@ import { buildLiveRecommendations, buildRecommendations, scoreStock } from './se
 import { loadHoldings, loadSettings, saveHoldings, saveSettings } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.3.0'
+const APP_VERSION = '0.3.2'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -22,6 +22,7 @@ interface AppState {
   settings: AppSettings
   holdings: Holding[]
   recommendations: Recommendation[]
+  allRecommendations: Recommendation[]
   lastSignalAt: string | null
   isInvesting: boolean
   selectedStock: WatchlistItem | null
@@ -36,6 +37,7 @@ const state: AppState = {
   settings: loadSettings(),
   holdings: loadHoldings(),
   recommendations: [],
+  allRecommendations: [],
   lastSignalAt: null,
   isInvesting: false,
   selectedStock: null,
@@ -225,7 +227,9 @@ function renderWatchlist(): string {
 }
 
 function renderStockRow(stock: WatchlistItem): string {
-  const recommendation = scoreStock(stock, state.settings)
+  const recommendation =
+    state.allRecommendations.find((r) => r.stock.symbol === stock.symbol) ??
+    scoreStock(stock, state.settings)
   const providers = stock.providers.map((provider) => `<span>${provider}</span>`).join('')
 
   return `
@@ -476,7 +480,9 @@ function bindEvents(): void {
     render()
 
     try {
-      state.recommendations = await buildLiveRecommendations(state.settings)
+      const all = await buildLiveRecommendations(state.settings)
+      state.allRecommendations = all
+      state.recommendations = all.slice(0, 3)
     } catch {
       state.recommendations = buildRecommendations(state.settings)
     } finally {

@@ -26,7 +26,6 @@ export async function buildLiveRecommendations(settings: AppSettings): Promise<R
 
   return scored
     .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
     .map((recommendation, index) => ({ ...recommendation, rank: index + 1 }))
 }
 
