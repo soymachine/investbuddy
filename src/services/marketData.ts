@@ -255,6 +255,182 @@ function firstNumber(data: Record<string, unknown>, keys: string[]): number | un
   return undefined
 }
 
+export interface PricePoint {
+  date: string
+  price: number
+}
+
+export interface PriceHistory {
+  points: PricePoint[]
+  source: string
+}
+
+export async function fetchPriceHistory(
+  stock: WatchlistItem,
+  settings: AppSettings,
+  days: 30 | 60,
+): Promise<PriceHistory> {
+  if (settings.finnhubApiKey && stock.region === 'US') {
+    try {
+      const points = await fetchFinnhubHistory(stock, settings, days)
+      if (points.length >= Math.floor(days * 0.6)) return { points, source: 'Finnhub' }
+    } catch {}
+  }
+
+  if (settings.eodhdApiKey) {
+    try {
+      const points = await fetchEodhdHistory(stock, settings, days)
+      if (points.length >= Math.floor(days * 0.6)) return { points, source: 'EODHD' }
+    } catch {}
+  }
+
+  if (settings.alphaVantageApiKey && stock.region === 'US') {
+    try {
+      const points = await fetchAlphaVantageHistory(stock, settings, days)
+      if (points.length >= Math.floor(days * 0.6)) return { points, source: 'Alpha Vantage' }
+    } catch {}
+  }
+
+  if (settings.fmpApiKey) {
+    try {
+      const points = await fetchFmpHistory(stock, settings, days)
+      if (points.length >= Math.floor(days * 0.6)) return { points, source: 'FMP' }
+    } catch {}
+  }
+
+  return { points: mockPriceHistory(stock, days), source: 'Estimado (sin API)' }
+}
+
+async function fetchFinnhubHistory(
+  stock: WatchlistItem,
+  settings: AppSettings,
+  days: number,
+): Promise<PricePoint[]> {
+  const now = Math.floor(Date.now() / 1000)
+  const from = now - (days + 14) * 24 * 60 * 60
+
+  const url = new URL('https://finnhub.io/api/v1/stock/candle')
+  url.searchParams.set('symbol', stock.symbol)
+  url.searchParams.set('resolution', 'D')
+  url.searchParams.set('from', String(from))
+  url.searchParams.set('to', String(now))
+  url.searchParams.set('token', settings.finnhubApiKey)
+
+  const candles = await fetchJson<{ s: string; c?: number[]; t?: number[] }>(url)
+  if (candles.s !== 'ok' || !candles.c?.length || !candles.t?.length) return []
+
+  const count = Math.min(days, candles.c.length)
+  const closes = candles.c.slice(-count)
+  const timestamps = candles.t.slice(-count)
+
+  return closes.map((price, i) => ({
+    date: new Date(timestamps[i] * 1000).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' }),
+    price: Number(price.toFixed(2)),
+  }))
+}
+
+async function fetchAlphaVantageHistory(
+  stock: WatchlistItem,
+  settings: AppSettings,
+  days: number,
+): Promise<PricePoint[]> {
+  const url = new URL('https://www.alphavantage.co/query')
+  url.searchParams.set('function', 'TIME_SERIES_DAILY')
+  url.searchParams.set('symbol', stock.symbol)
+  url.searchParams.set('outputsize', days > 30 ? 'full' : 'compact')
+  url.searchParams.set('apikey', settings.alphaVantageApiKey)
+
+  const data = await fetchJson<Record<string, unknown>>(url)
+  const series = data['Time Series (Daily)'] as Record<string, Record<string, string>> | undefined
+  if (!series) return []
+
+  return Object.entries(series)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-days)
+    .map(([dateStr, values]) => ({
+      date: new Date(dateStr).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' }),
+      price: Number(parseFloat(values['4. close']).toFixed(2)),
+    }))
+}
+
+async function fetchEodhdHistory(
+  stock: WatchlistItem,
+  settings: AppSettings,
+  days: number,
+): Promise<PricePoint[]> {
+  const from = new Date()
+  from.setDate(from.getDate() - days - 5)
+  const fromStr = from.toISOString().slice(0, 10)
+
+  const url = new URL(`https://eodhd.com/api/eod/${encodeURIComponent(stock.symbol)}`)
+  url.searchParams.set('api_token', settings.eodhdApiKey)
+  url.searchParams.set('from', fromStr)
+  url.searchParams.set('fmt', 'json')
+
+  const data = await fetchJson<Array<{ date: string; close: number }>>(url)
+  if (!Array.isArray(data)) return []
+
+  return data.slice(-days).map((item) => ({
+    date: new Date(item.date).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' }),
+    price: Number(item.close.toFixed(2)),
+  }))
+}
+
+async function fetchFmpHistory(
+  stock: WatchlistItem,
+  settings: AppSettings,
+  days: number,
+): Promise<PricePoint[]> {
+  const to = new Date().toISOString().slice(0, 10)
+  const from = new Date()
+  from.setDate(from.getDate() - days - 5)
+  const fromStr = from.toISOString().slice(0, 10)
+
+  const url = new URL(`https://financialmodelingprep.com/api/v3/historical-price-full/${encodeURIComponent(stock.symbol)}`)
+  url.searchParams.set('from', fromStr)
+  url.searchParams.set('to', to)
+  url.searchParams.set('apikey', settings.fmpApiKey)
+
+  const data = await fetchJson<{ historical?: Array<{ date: string; close: number }> }>(url)
+  if (!data.historical?.length) return []
+
+  return data.historical
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-days)
+    .map((item) => ({
+      date: new Date(item.date).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' }),
+      price: Number(item.close.toFixed(2)),
+    }))
+}
+
+function mockPriceHistory(stock: WatchlistItem, days: number): PricePoint[] {
+  const endPrice = mockCurrentPrice(stock)
+  const today = new Date()
+
+  const tradingDays: Date[] = []
+  for (let offset = 0; tradingDays.length < days; offset++) {
+    const date = new Date(today)
+    date.setDate(today.getDate() - offset)
+    if (date.getDay() !== 0 && date.getDay() !== 6) tradingDays.push(new Date(date))
+    if (offset > days * 3) break
+  }
+
+  const returns = tradingDays.map((_, i) => (seeded(stock.symbol, i * 13 + 7) - 0.5) * 0.038)
+  const totalCompound = returns.reduce((acc, r) => acc * (1 + r), 1)
+  const startPrice = endPrice / totalCompound
+
+  let price = startPrice
+  return tradingDays
+    .reverse()
+    .map((date, i) => {
+      price = i === 0 ? startPrice : price * (1 + returns[tradingDays.length - 1 - i])
+      return {
+        date: date.toLocaleDateString('es-ES', { month: 'short', day: 'numeric' }),
+        price: Number(Math.max(price, 0.01).toFixed(2)),
+      }
+    })
+}
+
 interface MarketauxArticle {
   entities?: Array<{
     symbol?: string

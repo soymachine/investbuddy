@@ -1,11 +1,18 @@
 import './style.css'
 import { WATCHLIST } from './data/watchlist'
-import { getProviderStatus, hasMinimumDataAccess, mockCurrentPrice, toEur } from './services/marketData'
+import {
+  getProviderStatus,
+  hasMinimumDataAccess,
+  mockCurrentPrice,
+  toEur,
+  fetchPriceHistory,
+} from './services/marketData'
+import type { PricePoint } from './services/marketData'
 import { buildLiveRecommendations, buildRecommendations, scoreStock } from './services/scoring'
 import { loadHoldings, loadSettings, saveHoldings, saveSettings } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.1.0'
+const APP_VERSION = '0.2.0'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -16,6 +23,11 @@ interface AppState {
   recommendations: Recommendation[]
   lastSignalAt: string | null
   isInvesting: boolean
+  selectedStock: WatchlistItem | null
+  stockHistory: PricePoint[] | null
+  historyDays: 30 | 60
+  historyLoading: boolean
+  historySource: string
 }
 
 const state: AppState = {
@@ -25,6 +37,11 @@ const state: AppState = {
   recommendations: [],
   lastSignalAt: null,
   isInvesting: false,
+  selectedStock: null,
+  stockHistory: null,
+  historyDays: 30,
+  historyLoading: false,
+  historySource: '',
 }
 
 const app = document.querySelector<HTMLDivElement>('#app')
@@ -40,9 +57,10 @@ function render(): void {
     <div class="app-shell">
       ${renderHeader()}
       <main class="workspace">
-        ${renderHero()}
+        ${state.view === 'dashboard' ? renderHero() : renderCompactInvest()}
         ${renderView()}
       </main>
+      ${state.selectedStock ? renderStockModal() : ''}
     </div>
   `
 
@@ -98,6 +116,26 @@ function renderHero(): string {
       </button>
       <div class="orb" aria-hidden="true"></div>
     </section>
+  `
+}
+
+function renderCompactInvest(): string {
+  const label = state.isInvesting ? 'ANALIZANDO' : 'INVERTIR'
+  const subtitle = state.lastSignalAt
+    ? `Ultima senal: ${state.lastSignalAt}`
+    : 'Analiza la watchlist completa'
+
+  return `
+    <div class="compact-invest">
+      <div>
+        <p class="eyebrow">/ CAPITAL DECISION SYSTEM</p>
+        <p class="compact-invest-sub">${subtitle}</p>
+      </div>
+      <button class="invest-button-compact" id="invest-button" type="button" ${state.isInvesting ? 'disabled' : ''}>
+        <span>${label}</span>
+        <small>100 EUR / TOP 3</small>
+      </button>
+    </div>
   `
 }
 
@@ -175,6 +213,7 @@ function renderWatchlist(): string {
           <p class="eyebrow">/ FIXED UNIVERSE</p>
           <h2>Watchlist inicial EEUU + Europa</h2>
         </div>
+        <p class="watchlist-hint">Pulsa sobre cualquier accion para ver su evolucion de precio.</p>
         <div class="stock-table" role="table" aria-label="Watchlist de acciones">
           ${WATCHLIST.map(renderStockRow).join('')}
         </div>
@@ -188,7 +227,7 @@ function renderStockRow(stock: WatchlistItem): string {
   const providers = stock.providers.map((provider) => `<span>${provider}</span>`).join('')
 
   return `
-    <div class="stock-row" role="row">
+    <div class="stock-row" role="row" data-symbol="${stock.symbol}" tabindex="0" aria-label="Ver evolucion de ${stock.name}">
       <div>
         <strong>${stock.symbol}</strong>
         <small>${stock.name}</small>
@@ -199,6 +238,132 @@ function renderStockRow(stock: WatchlistItem): string {
       <span>${stock.currency} ${mockCurrentPrice(stock).toFixed(2)}</span>
       <span class="mini-score">${recommendation.score.toFixed(1)}</span>
       <div class="provider-stack">${providers}</div>
+    </div>
+  `
+}
+
+function renderStockModal(): string {
+  const stock = state.selectedStock!
+  const chartContent = state.historyLoading
+    ? '<div class="chart-loading">CARGANDO DATOS...</div>'
+    : state.stockHistory && state.stockHistory.length > 1
+      ? renderPriceChart(state.stockHistory, stock)
+      : '<div class="chart-loading">SIN DATOS DISPONIBLES</div>'
+
+  return `
+    <div class="modal-overlay" id="stock-modal" role="dialog" aria-modal="true" aria-label="Evolucion de ${stock.symbol}">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">/ EVOLUCION DE PRECIO</p>
+            <h2 class="modal-title">${stock.symbol} <span>${stock.name}</span></h2>
+          </div>
+          <button class="modal-close" id="modal-close" type="button" aria-label="Cerrar">&#x2715;</button>
+        </div>
+        <div class="period-toggle">
+          <button class="period-btn ${state.historyDays === 30 ? 'is-active' : ''}" data-days="30" type="button">30 DIAS</button>
+          <button class="period-btn ${state.historyDays === 60 ? 'is-active' : ''}" data-days="60" type="button">60 DIAS</button>
+        </div>
+        <div class="chart-area">
+          ${chartContent}
+        </div>
+        ${!state.historyLoading && state.stockHistory?.length ? renderHistoryStats(state.stockHistory, stock) : ''}
+      </div>
+    </div>
+  `
+}
+
+function renderPriceChart(history: PricePoint[], stock: WatchlistItem): string {
+  const W = 580
+  const H = 200
+  const pad = { top: 14, right: 16, bottom: 30, left: 58 }
+  const plotW = W - pad.left - pad.right
+  const plotH = H - pad.top - pad.bottom
+
+  const prices = history.map((p) => p.price)
+  const rawMin = Math.min(...prices)
+  const rawMax = Math.max(...prices)
+  const spread = rawMax - rawMin || rawMax * 0.01
+  const minP = rawMin - spread * 0.08
+  const maxP = rawMax + spread * 0.08
+
+  const xScale = (i: number) => pad.left + (i / (history.length - 1)) * plotW
+  const yScale = (p: number) => pad.top + plotH - ((p - minP) / (maxP - minP)) * plotH
+
+  const pathData = history
+    .map((point, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(point.price).toFixed(1)}`)
+    .join(' ')
+
+  const bottomY = pad.top + plotH
+  const areaPath = `${pathData} L${xScale(history.length - 1).toFixed(1)},${bottomY} L${xScale(0).toFixed(1)},${bottomY} Z`
+
+  const isUp = prices[prices.length - 1] >= prices[0]
+  const lineColor = isUp ? 'var(--positive)' : 'var(--danger)'
+
+  const xLabelCount = 5
+  const xLabels = Array.from({ length: xLabelCount }, (_, i) => {
+    const idx = Math.round((i * (history.length - 1)) / (xLabelCount - 1))
+    return `<text x="${xScale(idx).toFixed(1)}" y="${H - 6}" fill="var(--text-muted)" font-size="9" text-anchor="middle">${history[idx].date}</text>`
+  }).join('')
+
+  const yLabelCount = 4
+  const yLabels = Array.from({ length: yLabelCount }, (_, i) => {
+    const p = minP + ((maxP - minP) * i) / (yLabelCount - 1)
+    const y = yScale(p)
+    return `<text x="${pad.left - 5}" y="${(y + 4).toFixed(1)}" fill="var(--text-muted)" font-size="9" text-anchor="end">${p.toFixed(stock.currency === 'DKK' ? 0 : 1)}</text>`
+  }).join('')
+
+  const gridLines = Array.from({ length: yLabelCount }, (_, i) => {
+    const p = minP + ((maxP - minP) * i) / (yLabelCount - 1)
+    const y = yScale(p).toFixed(1)
+    return `<line x1="${pad.left}" y1="${y}" x2="${pad.left + plotW}" y2="${y}" stroke="rgba(255,230,0,0.06)" stroke-width="1"/>`
+  }).join('')
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:200px;display:block" aria-hidden="true">
+      <defs>
+        <linearGradient id="area-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${lineColor}" stop-opacity="0.2"/>
+          <stop offset="100%" stop-color="${lineColor}" stop-opacity="0.02"/>
+        </linearGradient>
+      </defs>
+      ${gridLines}
+      <path d="${areaPath}" fill="url(#area-grad)" stroke="none"/>
+      <path d="${pathData}" fill="none" stroke="${lineColor}" stroke-width="1.6" stroke-linejoin="round"/>
+      ${xLabels}
+      ${yLabels}
+    </svg>
+  `
+}
+
+function renderHistoryStats(history: PricePoint[], stock: WatchlistItem): string {
+  const first = history[0].price
+  const last = history[history.length - 1].price
+  const change = last - first
+  const changePct = first > 0 ? (change / first) * 100 : 0
+  const min = Math.min(...history.map((p) => p.price))
+  const max = Math.max(...history.map((p) => p.price))
+  const isUp = change >= 0
+
+  return `
+    <div class="history-stats">
+      <div class="stat-item">
+        <span class="stat-value ${isUp ? 'positive' : 'negative'}">${isUp ? '+' : ''}${changePct.toFixed(2)}%</span>
+        <small>VARIACION ${state.historyDays}D</small>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">${stock.currency} ${last.toFixed(2)}</span>
+        <small>ULTIMO PRECIO</small>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">${stock.currency} ${min.toFixed(2)}</span>
+        <small>MINIMO</small>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">${stock.currency} ${max.toFixed(2)}</span>
+        <small>MAXIMO</small>
+      </div>
+      ${state.historySource ? `<div class="stat-item"><span class="stat-value stat-source-val">${state.historySource}</span><small>FUENTE</small></div>` : ''}
     </div>
   `
 }
@@ -351,6 +516,74 @@ function bindEvents(): void {
     saveSettings(state.settings)
     render()
   })
+
+  // Stock row click → open price evolution modal
+  document.querySelectorAll<HTMLElement>('[data-symbol]').forEach((row) => {
+    row.addEventListener('click', () => openStockModal(row.dataset.symbol!))
+    row.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        openStockModal(row.dataset.symbol!)
+      }
+    })
+  })
+
+  // Modal close button
+  document.querySelector<HTMLButtonElement>('#modal-close')?.addEventListener('click', closeStockModal)
+
+  // Click outside modal panel to close
+  document.querySelector<HTMLElement>('#stock-modal')?.addEventListener('click', (event) => {
+    if ((event.target as HTMLElement).id === 'stock-modal') closeStockModal()
+  })
+
+  // Escape key to close modal
+  document.addEventListener('keydown', handleModalEscape, { once: true })
+
+  // Period toggle buttons
+  document.querySelectorAll<HTMLButtonElement>('[data-days]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const days = parseInt(button.dataset.days ?? '30') as 30 | 60
+      if (days === state.historyDays || !state.selectedStock || state.historyLoading) return
+      state.historyDays = days
+      await loadStockHistory(state.selectedStock)
+    })
+  })
+}
+
+function handleModalEscape(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && state.selectedStock) closeStockModal()
+}
+
+function closeStockModal(): void {
+  state.selectedStock = null
+  state.stockHistory = null
+  render()
+}
+
+async function openStockModal(symbol: string): Promise<void> {
+  const stock = WATCHLIST.find((s) => s.symbol === symbol)
+  if (!stock) return
+
+  state.selectedStock = stock
+  state.stockHistory = null
+  await loadStockHistory(stock)
+}
+
+async function loadStockHistory(stock: WatchlistItem): Promise<void> {
+  state.historyLoading = true
+  render()
+
+  try {
+    const result = await fetchPriceHistory(stock, state.settings, state.historyDays)
+    state.stockHistory = result.points
+    state.historySource = result.source
+  } catch {
+    state.stockHistory = []
+    state.historySource = ''
+  } finally {
+    state.historyLoading = false
+    render()
+  }
 }
 
 function registerHolding(stock: WatchlistItem): void {
