@@ -6,13 +6,14 @@ import {
   mockCurrentPrice,
   toEur,
   fetchPriceHistory,
+  refreshFxRates,
 } from './services/marketData'
 import type { PricePoint } from './services/marketData'
 import { buildLiveRecommendations, buildRecommendations, scoreStock } from './services/scoring'
 import { loadHoldings, loadSettings, saveHoldings, saveSettings } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.2.0'
+const APP_VERSION = '0.3.0'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -50,6 +51,7 @@ if (!app) {
   throw new Error('Missing app root')
 }
 
+refreshFxRates() // fire-and-forget: actualiza tipos de cambio ECB en background
 render()
 
 function render(): void {
