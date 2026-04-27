@@ -10,6 +10,12 @@ export interface MarketSnapshot {
   timestamp: number
 }
 
+export interface ScorePoint {
+  timestamp: number
+  score: number
+  price: number
+}
+
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
@@ -78,6 +84,16 @@ export async function loadMarketSnapshot(): Promise<MarketSnapshot | null> {
   } catch {
     return null
   }
+}
+
+export async function loadScoreHistory(symbol: string): Promise<ScorePoint[]> {
+  if (isTauri()) {
+    try {
+      const rows = await invoke<[number, number, number][]>('db_load_score_history', { symbol })
+      return rows.map(([timestamp, score, price]) => ({ timestamp, score, price }))
+    } catch {}
+  }
+  return []
 }
 
 export async function saveMarketSnapshot(allRecommendations: Recommendation[], timestamp: number): Promise<void> {

@@ -65,6 +65,44 @@ fn db_load_latest_snapshot(
 }
 
 #[tauri::command]
+fn db_load_score_history(
+    state: tauri::State<DbConn>,
+    symbol: String,
+) -> Result<Vec<(i64, f64, f64)>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT timestamp, data FROM market_snapshots ORDER BY timestamp ASC")
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut result = Vec::new();
+    for (timestamp, data) in rows {
+        if let Ok(recs) = serde_json::from_str::<Vec<serde_json::Value>>(&data) {
+            for rec in &recs {
+                let sym = rec
+                    .get("stock")
+                    .and_then(|s| s.get("symbol"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("");
+                if sym.eq_ignore_ascii_case(&symbol) {
+                    let score = rec.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let price = rec.get("price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    result.push((timestamp, score, price));
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
 fn healthcheck() -> &'static str {
     "investbuddy-ready"
 }
@@ -126,7 +164,8 @@ pub fn run() {
             healthcheck,
             http_get_json,
             db_save_snapshot,
-            db_load_latest_snapshot
+            db_load_latest_snapshot,
+            db_load_score_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running InvestBuddy");

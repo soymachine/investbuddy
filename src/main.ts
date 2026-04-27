@@ -10,10 +10,11 @@ import {
 } from './services/marketData'
 import type { PricePoint } from './services/marketData'
 import { buildLiveRecommendations, buildRecommendations, scoreStock } from './services/scoring'
-import { loadHoldings, loadMarketSnapshot, loadSettings, saveHoldings, saveMarketSnapshot, saveSettings } from './services/storage'
+import { loadHoldings, loadMarketSnapshot, loadScoreHistory, loadSettings, saveHoldings, saveMarketSnapshot, saveSettings } from './services/storage'
+import type { ScorePoint } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.5.0'
+const APP_VERSION = '0.6.0'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -28,6 +29,7 @@ interface AppState {
   watchlistSortByScore: boolean
   selectedStock: WatchlistItem | null
   stockHistory: PricePoint[] | null
+  scoreHistory: ScorePoint[] | null
   historyDays: 30 | 60
   historyLoading: boolean
   historySource: string
@@ -44,6 +46,7 @@ const state: AppState = {
   watchlistSortByScore: false,
   selectedStock: null,
   stockHistory: null,
+  scoreHistory: null,
   historyDays: 30,
   historyLoading: false,
   historySource: '',
@@ -325,6 +328,7 @@ function renderStockModal(): string {
         </div>
         ${!state.historyLoading && state.stockHistory?.length ? renderHistoryStats(state.stockHistory, stock) : ''}
         ${renderScoreBreakdown(recommendation)}
+        ${renderScoreHistorySection()}
       </div>
     </div>
   `
@@ -469,6 +473,97 @@ function renderScoreBreakdown(rec: Recommendation): string {
       ${warningHtml}
     </div>
   `
+}
+
+function renderScoreHistorySection(): string {
+  const hist = state.scoreHistory
+
+  if (state.historyLoading || hist === null) {
+    return `
+      <div class="score-history-section">
+        <p class="eyebrow">/ SCORE HISTÓRICO</p>
+        <div class="chart-loading">CARGANDO HISTORIAL...</div>
+      </div>`
+  }
+
+  if (hist.length < 2) {
+    return `
+      <div class="score-history-section">
+        <p class="eyebrow">/ SCORE HISTÓRICO</p>
+        <div class="chart-loading">SIN HISTORIAL — PULSA ACTUALIZAR DOS O MÁS VECES PARA VER LA EVOLUCIÓN</div>
+      </div>`
+  }
+
+  return `
+    <div class="score-history-section">
+      <p class="eyebrow">/ SCORE HISTÓRICO</p>
+      <div class="chart-area score-history-chart">
+        ${renderScoreChart(hist)}
+      </div>
+    </div>`
+}
+
+function renderScoreChart(history: ScorePoint[]): string {
+  const W = 580
+  const H = 160
+  const pad = { top: 14, right: 16, bottom: 30, left: 40 }
+  const plotW = W - pad.left - pad.right
+  const plotH = H - pad.top - pad.bottom
+
+  const scores = history.map((p) => p.score)
+  const rawMin = Math.min(...scores)
+  const rawMax = Math.max(...scores)
+  const spread = rawMax - rawMin || 5
+  const minS = Math.max(0, rawMin - spread * 0.15)
+  const maxS = Math.min(100, rawMax + spread * 0.15)
+
+  const xScale = (i: number) => pad.left + (i / (history.length - 1)) * plotW
+  const yScale = (s: number) => pad.top + plotH - ((s - minS) / (maxS - minS)) * plotH
+
+  const pathData = history
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(p.score).toFixed(1)}`)
+    .join(' ')
+  const bottomY = pad.top + plotH
+  const areaPath = `${pathData} L${xScale(history.length - 1).toFixed(1)},${bottomY} L${xScale(0).toFixed(1)},${bottomY} Z`
+
+  const isUp = scores[scores.length - 1] >= scores[0]
+  const lineColor = isUp ? 'var(--positive)' : 'var(--danger)'
+
+  const xLabelCount = Math.min(5, history.length)
+  const xLabels = Array.from({ length: xLabelCount }, (_, i) => {
+    const idx = Math.round((i * (history.length - 1)) / (xLabelCount - 1))
+    const label = new Date(history[idx].timestamp).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' })
+    return `<text x="${xScale(idx).toFixed(1)}" y="${H - 6}" fill="var(--text-muted)" font-size="9" text-anchor="middle">${label}</text>`
+  }).join('')
+
+  const yLabelCount = 3
+  const gridAndLabels = Array.from({ length: yLabelCount }, (_, i) => {
+    const s = minS + ((maxS - minS) * i) / (yLabelCount - 1)
+    const y = yScale(s)
+    return `
+      <line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${pad.left + plotW}" y2="${y.toFixed(1)}" stroke="rgba(255,230,0,0.06)" stroke-width="1"/>
+      <text x="${pad.left - 5}" y="${(y + 4).toFixed(1)}" fill="var(--text-muted)" font-size="9" text-anchor="end">${s.toFixed(0)}</text>`
+  }).join('')
+
+  // Dots for each data point
+  const dots = history
+    .map((p, i) => `<circle cx="${xScale(i).toFixed(1)}" cy="${yScale(p.score).toFixed(1)}" r="2.5" fill="${lineColor}" opacity="0.8"/>`)
+    .join('')
+
+  return `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:160px;display:block" aria-hidden="true">
+      <defs>
+        <linearGradient id="score-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${lineColor}" stop-opacity="0.2"/>
+          <stop offset="100%" stop-color="${lineColor}" stop-opacity="0.02"/>
+        </linearGradient>
+      </defs>
+      ${gridAndLabels}
+      <path d="${areaPath}" fill="url(#score-grad)" stroke="none"/>
+      <path d="${pathData}" fill="none" stroke="${lineColor}" stroke-width="1.6" stroke-linejoin="round"/>
+      ${dots}
+      ${xLabels}
+    </svg>`
 }
 
 function renderPortfolio(): string {
@@ -674,6 +769,7 @@ function handleModalEscape(event: KeyboardEvent): void {
 function closeStockModal(): void {
   state.selectedStock = null
   state.stockHistory = null
+  state.scoreHistory = null
   render()
 }
 
@@ -683,6 +779,7 @@ async function openStockModal(symbol: string): Promise<void> {
 
   state.selectedStock = stock
   state.stockHistory = null
+  state.scoreHistory = null
   await loadStockHistory(stock)
 }
 
@@ -691,12 +788,20 @@ async function loadStockHistory(stock: WatchlistItem): Promise<void> {
   render()
 
   try {
-    const result = await fetchPriceHistory(stock, state.settings, state.historyDays)
+    // Price history and score history in parallel; score history only on first open
+    const pricePromise = fetchPriceHistory(stock, state.settings, state.historyDays)
+    const scorePromise = state.scoreHistory === null
+      ? loadScoreHistory(stock.symbol)
+      : Promise.resolve(state.scoreHistory)
+
+    const [result, scoreHist] = await Promise.all([pricePromise, scorePromise])
     state.stockHistory = result.points
     state.historySource = result.source
+    state.scoreHistory = scoreHist
   } catch {
     state.stockHistory = []
     state.historySource = ''
+    if (state.scoreHistory === null) state.scoreHistory = []
   } finally {
     state.historyLoading = false
     render()

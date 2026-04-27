@@ -973,6 +973,20 @@ p {
   text-align: right;
 }
 
+.score-history-section {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.score-history-section > .eyebrow {
+  margin-bottom: 12px;
+}
+
+.score-history-chart {
+  min-height: 160px;
+}
+
 .breakdown-warnings {
   color: var(--danger);
   font-size: 10px;
