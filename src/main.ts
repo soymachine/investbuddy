@@ -14,7 +14,7 @@ import { exportBackup, importBackup, loadHoldings, loadMarketSnapshot, loadScore
 import type { ScorePoint } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.7.0'
+const APP_VERSION = '0.7.1'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -67,6 +67,7 @@ async function init(): Promise<void> {
       state.allRecommendations = snapshot.allRecommendations
       state.recommendations = snapshot.allRecommendations.slice(0, 3)
       state.lastUpdatedAt = snapshot.timestamp
+      syncHoldingPrices(snapshot.allRecommendations)
     }
   } catch {
     // no snapshot available, start fresh
@@ -700,6 +701,7 @@ function bindEvents(): void {
       state.allRecommendations = all
       state.recommendations = all.slice(0, 3)
       state.lastUpdatedAt = Date.now()
+      syncHoldingPrices(all)
       saveMarketSnapshot(all, state.lastUpdatedAt).catch(() => {/* ignore persistence errors */})
     } catch {
       if (!state.recommendations.length) {
@@ -785,6 +787,7 @@ function bindEvents(): void {
         state.allRecommendations = snapshot.allRecommendations
         state.recommendations = snapshot.allRecommendations.slice(0, 3)
         state.lastUpdatedAt = snapshot.timestamp
+        syncHoldingPrices(snapshot.allRecommendations)
       }
 
       state.importStatus = {
@@ -878,6 +881,19 @@ async function loadStockHistory(stock: WatchlistItem): Promise<void> {
     state.historyLoading = false
     render()
   }
+}
+
+function syncHoldingPrices(recommendations: Recommendation[]): void {
+  let changed = false
+  state.holdings = state.holdings.map((holding) => {
+    const rec = recommendations.find((r) => r.stock.symbol === holding.symbol)
+    if (rec && rec.price !== holding.currentPrice) {
+      changed = true
+      return { ...holding, currentPrice: rec.price }
+    }
+    return holding
+  })
+  if (changed) saveHoldings(state.holdings)
 }
 
 function registerHolding(stock: WatchlistItem): void {
