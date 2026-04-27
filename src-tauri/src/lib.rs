@@ -36,6 +36,14 @@ fn db_save_snapshot(
         rusqlite::params![timestamp, data],
     )
     .map_err(|e| e.to_string())?;
+
+    const SIXTY_DAYS_MS: i64 = 60 * 24 * 60 * 60 * 1000;
+    conn.execute(
+        "DELETE FROM market_snapshots WHERE timestamp < ?1",
+        rusqlite::params![timestamp - SIXTY_DAYS_MS],
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
