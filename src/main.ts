@@ -10,7 +10,7 @@ import {
 } from './services/marketData'
 import type { PricePoint } from './services/marketData'
 import { buildLiveRecommendations, buildRecommendations, scoreStock } from './services/scoring'
-import { loadHoldings, loadSettings, saveHoldings, saveSettings } from './services/storage'
+import { loadHoldings, loadMarketSnapshot, loadSettings, saveHoldings, saveMarketSnapshot, saveSettings } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
 const APP_VERSION = '0.4.0'
@@ -33,13 +33,15 @@ interface AppState {
   historySource: string
 }
 
+const _savedSnapshot = loadMarketSnapshot()
+
 const state: AppState = {
   view: 'dashboard',
   settings: loadSettings(),
   holdings: loadHoldings(),
-  recommendations: [],
-  allRecommendations: [],
-  lastUpdatedAt: null,
+  recommendations: _savedSnapshot ? _savedSnapshot.allRecommendations.slice(0, 3) : [],
+  allRecommendations: _savedSnapshot ? _savedSnapshot.allRecommendations : [],
+  lastUpdatedAt: _savedSnapshot ? _savedSnapshot.timestamp : null,
   isRefreshing: false,
   watchlistSortByScore: false,
   selectedStock: null,
@@ -571,6 +573,7 @@ function bindEvents(): void {
       state.allRecommendations = all
       state.recommendations = all.slice(0, 3)
       state.lastUpdatedAt = Date.now()
+      saveMarketSnapshot(all, state.lastUpdatedAt)
     } catch {
       if (!state.recommendations.length) {
         state.recommendations = buildRecommendations(state.settings)
