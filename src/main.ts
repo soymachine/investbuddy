@@ -13,7 +13,7 @@ import { buildLiveRecommendations, buildRecommendations, scoreStock } from './se
 import { loadHoldings, loadMarketSnapshot, loadSettings, saveHoldings, saveMarketSnapshot, saveSettings } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.4.0'
+const APP_VERSION = '0.5.0'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -33,15 +33,13 @@ interface AppState {
   historySource: string
 }
 
-const _savedSnapshot = loadMarketSnapshot()
-
 const state: AppState = {
   view: 'dashboard',
   settings: loadSettings(),
   holdings: loadHoldings(),
-  recommendations: _savedSnapshot ? _savedSnapshot.allRecommendations.slice(0, 3) : [],
-  allRecommendations: _savedSnapshot ? _savedSnapshot.allRecommendations : [],
-  lastUpdatedAt: _savedSnapshot ? _savedSnapshot.timestamp : null,
+  recommendations: [],
+  allRecommendations: [],
+  lastUpdatedAt: null,
   isRefreshing: false,
   watchlistSortByScore: false,
   selectedStock: null,
@@ -57,8 +55,22 @@ if (!app) {
   throw new Error('Missing app root')
 }
 
-refreshFxRates() // fire-and-forget: actualiza tipos de cambio ECB en background
-render()
+async function init(): Promise<void> {
+  try {
+    const snapshot = await loadMarketSnapshot()
+    if (snapshot) {
+      state.allRecommendations = snapshot.allRecommendations
+      state.recommendations = snapshot.allRecommendations.slice(0, 3)
+      state.lastUpdatedAt = snapshot.timestamp
+    }
+  } catch {
+    // no snapshot available, start fresh
+  }
+  refreshFxRates()
+  render()
+}
+
+init()
 
 function render(): void {
   app.innerHTML = `
@@ -573,7 +585,7 @@ function bindEvents(): void {
       state.allRecommendations = all
       state.recommendations = all.slice(0, 3)
       state.lastUpdatedAt = Date.now()
-      saveMarketSnapshot(all, state.lastUpdatedAt)
+      saveMarketSnapshot(all, state.lastUpdatedAt).catch(() => {/* ignore persistence errors */})
     } catch {
       if (!state.recommendations.length) {
         state.recommendations = buildRecommendations(state.settings)

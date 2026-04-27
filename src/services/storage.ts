@@ -1,12 +1,17 @@
+import { invoke } from '@tauri-apps/api/core'
 import type { AppSettings, Holding, Recommendation } from '../types'
 
 const settingsKey = 'investbuddy.settings'
 const holdingsKey = 'investbuddy.holdings'
 const snapshotKey = 'investbuddy.market_snapshot'
 
-interface MarketSnapshot {
+export interface MarketSnapshot {
   allRecommendations: Recommendation[]
   timestamp: number
+}
+
+function isTauri(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 }
 
 export const defaultSettings: AppSettings = {
@@ -51,10 +56,21 @@ export function saveHoldings(holdings: Holding[]): void {
   localStorage.setItem(holdingsKey, JSON.stringify(holdings))
 }
 
-export function loadMarketSnapshot(): MarketSnapshot | null {
+export async function loadMarketSnapshot(): Promise<MarketSnapshot | null> {
+  if (isTauri()) {
+    try {
+      const result = await invoke<[number, string] | null>('db_load_latest_snapshot')
+      if (!result) return null
+      const [timestamp, data] = result
+      const allRecommendations = JSON.parse(data) as Recommendation[]
+      return { allRecommendations, timestamp }
+    } catch {
+      // fall through to localStorage
+    }
+  }
+
   const raw = localStorage.getItem(snapshotKey)
   if (!raw) return null
-
   try {
     const snap = JSON.parse(raw) as MarketSnapshot
     if (!Array.isArray(snap.allRecommendations) || !snap.timestamp) return null
@@ -64,7 +80,15 @@ export function loadMarketSnapshot(): MarketSnapshot | null {
   }
 }
 
-export function saveMarketSnapshot(allRecommendations: Recommendation[], timestamp: number): void {
-  const snap: MarketSnapshot = { allRecommendations, timestamp }
-  localStorage.setItem(snapshotKey, JSON.stringify(snap))
+export async function saveMarketSnapshot(allRecommendations: Recommendation[], timestamp: number): Promise<void> {
+  if (isTauri()) {
+    try {
+      await invoke('db_save_snapshot', { data: JSON.stringify(allRecommendations), timestamp })
+      return
+    } catch {
+      // fall through to localStorage
+    }
+  }
+
+  localStorage.setItem(snapshotKey, JSON.stringify({ allRecommendations, timestamp }))
 }
