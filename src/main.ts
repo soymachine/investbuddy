@@ -10,11 +10,11 @@ import {
 } from './services/marketData'
 import type { PricePoint } from './services/marketData'
 import { buildLiveRecommendations, buildRecommendations, scoreStock } from './services/scoring'
-import { loadHoldings, loadMarketSnapshot, loadScoreHistory, loadSettings, saveHoldings, saveMarketSnapshot, saveSettings } from './services/storage'
+import { exportBackup, importBackup, loadHoldings, loadMarketSnapshot, loadScoreHistory, loadSettings, saveHoldings, saveMarketSnapshot, saveSettings } from './services/storage'
 import type { ScorePoint } from './services/storage'
 import type { AppSettings, Holding, Recommendation, WatchlistItem } from './types'
 
-const APP_VERSION = '0.6.0'
+const APP_VERSION = '0.7.0'
 
 type ViewName = 'dashboard' | 'watchlist' | 'portfolio' | 'settings'
 
@@ -26,6 +26,7 @@ interface AppState {
   allRecommendations: Recommendation[]
   lastUpdatedAt: number | null
   isRefreshing: boolean
+  importStatus: { ok: boolean; message: string } | null
   watchlistSortByScore: boolean
   selectedStock: WatchlistItem | null
   stockHistory: PricePoint[] | null
@@ -43,6 +44,7 @@ const state: AppState = {
   allRecommendations: [],
   lastUpdatedAt: null,
   isRefreshing: false,
+  importStatus: null,
   watchlistSortByScore: false,
   selectedStock: null,
   stockHistory: null,
@@ -640,6 +642,24 @@ function renderSettings(): string {
           <button class="primary-button" type="submit">Guardar claves locales</button>
         </form>
       </article>
+      <article class="bento-card span-12">
+        <div class="section-heading">
+          <p class="eyebrow">/ BACKUP</p>
+          <h2>Exportar e importar datos</h2>
+        </div>
+        <div class="backup-panel">
+          <div class="backup-block">
+            <p class="backup-desc">Descarga un fichero JSON con el historial de scores y el portfolio. Úsalo para migrar a otra máquina o como copia de seguridad.</p>
+            <button class="ghost-button" id="export-btn" type="button">Exportar JSON</button>
+          </div>
+          <div class="backup-block">
+            <p class="backup-desc">Restaura desde un fichero de backup exportado previamente. Los snapshots actuales serán reemplazados por los del fichero.</p>
+            <button class="ghost-button" id="import-trigger-btn" type="button">Importar JSON</button>
+            <input type="file" id="import-file-input" accept=".json" style="display:none" aria-hidden="true">
+            ${state.importStatus ? `<p class="import-status ${state.importStatus.ok ? 'positive' : 'negative'}">${state.importStatus.message}</p>` : ''}
+          </div>
+        </div>
+      </article>
     </section>
   `
 }
@@ -726,6 +746,58 @@ function bindEvents(): void {
       riskProfile: String(form.get('riskProfile') ?? 'balanced') as AppSettings['riskProfile'],
     }
     saveSettings(state.settings)
+    render()
+  })
+
+  // Export backup
+  document.querySelector<HTMLButtonElement>('#export-btn')?.addEventListener('click', async () => {
+    try {
+      const json = await exportBackup(state.holdings)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `investbuddy-backup-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      // silent — nothing to download
+    }
+  })
+
+  // Import backup: trigger file picker
+  document.querySelector<HTMLButtonElement>('#import-trigger-btn')?.addEventListener('click', () => {
+    document.querySelector<HTMLInputElement>('#import-file-input')?.click()
+  })
+
+  document.querySelector<HTMLInputElement>('#import-file-input')?.addEventListener('change', async (event) => {
+    const file = (event.currentTarget as HTMLInputElement).files?.[0]
+    if (!file) return
+
+    try {
+      const json = await file.text()
+      const { holdings, snapshot } = await importBackup(json)
+
+      state.holdings = holdings
+      saveHoldings(holdings)
+
+      if (snapshot) {
+        state.allRecommendations = snapshot.allRecommendations
+        state.recommendations = snapshot.allRecommendations.slice(0, 3)
+        state.lastUpdatedAt = snapshot.timestamp
+      }
+
+      state.importStatus = {
+        ok: true,
+        message: `Backup restaurado: ${snapshot ? snapshot.allRecommendations.length + ' stocks' : 'sin snapshots'}, ${holdings.length} posiciones en portfolio.`,
+      }
+    } catch (err) {
+      state.importStatus = {
+        ok: false,
+        message: err instanceof Error ? err.message : 'Error al importar el fichero.',
+      }
+    }
+
     render()
   })
 

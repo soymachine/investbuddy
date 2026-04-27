@@ -5,6 +5,12 @@ use tauri::Manager;
 
 struct DbConn(Mutex<Connection>);
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SnapshotRow {
+    timestamp: i64,
+    data: String,
+}
+
 fn init_db(app: &tauri::App) -> Connection {
     let db_dir = app
         .path()
@@ -62,6 +68,40 @@ fn db_load_latest_snapshot(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
+}
+
+#[tauri::command]
+fn db_export_snapshots(state: tauri::State<DbConn>) -> Result<Vec<SnapshotRow>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT timestamp, data FROM market_snapshots ORDER BY timestamp ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SnapshotRow { timestamp: row.get(0)?, data: row.get(1)? })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+#[tauri::command]
+fn db_import_snapshots(
+    state: tauri::State<DbConn>,
+    snapshots: Vec<SnapshotRow>,
+) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM market_snapshots", [])
+        .map_err(|e| e.to_string())?;
+    for snap in snapshots {
+        conn.execute(
+            "INSERT INTO market_snapshots (timestamp, data) VALUES (?1, ?2)",
+            rusqlite::params![snap.timestamp, snap.data],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -165,6 +205,8 @@ pub fn run() {
             http_get_json,
             db_save_snapshot,
             db_load_latest_snapshot,
+            db_export_snapshots,
+            db_import_snapshots,
             db_load_score_history
         ])
         .run(tauri::generate_context!())

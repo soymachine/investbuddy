@@ -973,6 +973,46 @@ p {
   text-align: right;
 }
 
+/* ── Backup panel in Settings ────────────────────────────────── */
+
+.backup-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.backup-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--line-soft);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.backup-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+}
+
+.import-status {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 700px) {
+  .backup-panel {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Score history chart ─────────────────────────────────────── */
+
 .score-history-section {
   margin-top: 18px;
   padding-top: 18px;

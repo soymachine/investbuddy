@@ -108,3 +108,52 @@ export async function saveMarketSnapshot(allRecommendations: Recommendation[], t
 
   localStorage.setItem(snapshotKey, JSON.stringify({ allRecommendations, timestamp }))
 }
+
+// ── Backup export / import ────────────────────────────────────────────────────
+
+interface SnapshotRow {
+  timestamp: number
+  data: string
+}
+
+export interface BackupData {
+  exportedAt: number
+  snapshots: SnapshotRow[]
+  holdings: Holding[]
+}
+
+export async function exportBackup(holdings: Holding[]): Promise<string> {
+  let snapshots: SnapshotRow[] = []
+
+  if (isTauri()) {
+    try {
+      snapshots = await invoke<SnapshotRow[]>('db_export_snapshots')
+    } catch {}
+  }
+
+  const backup: BackupData = { exportedAt: Date.now(), snapshots, holdings }
+  return JSON.stringify(backup, null, 2)
+}
+
+export async function importBackup(json: string): Promise<{ holdings: Holding[]; snapshot: MarketSnapshot | null }> {
+  const data = JSON.parse(json) as Partial<BackupData>
+
+  if (!Array.isArray(data.snapshots) || !Array.isArray(data.holdings)) {
+    throw new Error('Fichero de backup no válido')
+  }
+
+  if (isTauri() && data.snapshots.length) {
+    await invoke('db_import_snapshots', { snapshots: data.snapshots })
+  }
+
+  // Reconstruct latest snapshot for immediate use
+  const latestRow = data.snapshots.at(-1)
+  let snapshot: MarketSnapshot | null = null
+  if (latestRow) {
+    try {
+      snapshot = { allRecommendations: JSON.parse(latestRow.data) as Recommendation[], timestamp: latestRow.timestamp }
+    } catch {}
+  }
+
+  return { holdings: data.holdings, snapshot }
+}
